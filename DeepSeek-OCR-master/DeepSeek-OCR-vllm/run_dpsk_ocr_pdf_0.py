@@ -1,4 +1,5 @@
 import os
+# import pymupdf as fitz
 import fitz
 import img2pdf
 import io
@@ -30,17 +31,16 @@ ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
 
 
 llm = LLM(
-    model=MODEL_PATH,
-    hf_overrides={"architectures": ["DeepseekOCRForCausalLM"]},
-    block_size=256,
-    enforce_eager=False,
-    trust_remote_code=True, 
+    model="deepseek-ai/DeepSeek-OCR",
+    dtype="float16",
+    trust_remote_code=True,
+    enable_prefix_caching=True,
     max_model_len=8192,
     swap_space=0,
     max_num_seqs=MAX_CONCURRENCY,
     tensor_parallel_size=1,
     gpu_memory_utilization=0.9,
-    disable_mm_preprocessor_cache=True
+    disable_mm_preprocessor_cache=True,
 )
 
 logits_processors = [NoRepeatNGramLogitsProcessor(ngram_size=20, window_size=50, whitelist_token_ids= {128821, 128822})] #window for fast；whitelist_token_ids: <td>,</td>
@@ -158,7 +158,10 @@ def draw_bounding_boxes(image, refs, jdx):
     draw2 = ImageDraw.Draw(overlay)
     
     #     except IOError:
-    font = ImageFont.load_default()
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 30)
+    except IOError:
+        font = ImageFont.load_default()
 
     img_idx = 0
     
@@ -197,16 +200,18 @@ def draw_bounding_boxes(image, refs, jdx):
                             draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
                             draw2.rectangle([x1, y1, x2, y2], fill=color_a, outline=(0, 0, 0, 0), width=1)
 
-                        text_x = x1
-                        text_y = max(0, y1 - 15)
-                            
-                        text_bbox = draw.textbbox((0, 0), label_type, font=font)
+                        id_text = f"{i+1}"
+                        text_bbox = draw.textbbox((0, 0), id_text, font=font)
                         text_width = text_bbox[2] - text_bbox[0]
                         text_height = text_bbox[3] - text_bbox[1]
-                        draw.rectangle([text_x, text_y, text_x + text_width, text_y + text_height], 
-                                    fill=(255, 255, 255, 30))
+
+                        text_x = x2 + 5
+                        text_y = y1
                         
-                        draw.text((text_x, text_y), label_type, font=font, fill=color)
+                        draw.rectangle([text_x, text_y, text_x + text_width, text_y + text_height], 
+                                    fill=(255, 255, 255, 128))
+                        
+                        draw.text((text_x, text_y), id_text, font=font, fill=color)
                     except:
                         pass
         except:
@@ -293,13 +298,20 @@ if __name__ == "__main__":
                 continue
 
         
-        page_num = f'\n<--- Page Split --->'
+        page_num_text = f'\n<--- Page Split --->'
 
-        contents_det += content + f'\n{page_num}\n'
+        matches_ref, matches_images, mathes_other = re_match(content)
+        
+        modified_content = content
+        for i, match in enumerate(matches_ref):
+            replacement = f'<|page|>{jdx+1}<|/page|><|id|>{i+1}<|/id|><|det|>'
+            modified_match = match[0].replace('<|det|>', replacement)
+            modified_content = modified_content.replace(match[0], modified_match)
+
+        contents_det += modified_content + f'\n{page_num_text}\n'
 
         image_draw = img.copy()
 
-        matches_ref, matches_images, mathes_other = re_match(content)
         # print(matches_ref)
         result_image = process_image_with_refs(image_draw, matches_ref, jdx)
 
@@ -314,7 +326,7 @@ if __name__ == "__main__":
             content = content.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n')
 
 
-        contents += content + f'\n{page_num}\n'
+        contents += content + f'\n{page_num_text}\n'
 
 
         jdx += 1
@@ -327,4 +339,3 @@ if __name__ == "__main__":
 
 
     pil_to_pdf_img2pdf(draw_images, pdf_out_path)
-
