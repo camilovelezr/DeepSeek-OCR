@@ -13,21 +13,21 @@ import glob
 
 if torch.version.cuda == '11.8':
     os.environ["TRITON_PTXAS_PATH"] = "/usr/local/cuda-11.8/bin/ptxas"
-os.environ['VLLM_USE_V1'] = '0'
 # CUDA_VISIBLE_DEVICES will be set in __init__ based on config
 
 from config import MODEL_PATH, PROMPT, SKIP_REPEAT, MAX_CONCURRENCY, NUM_WORKERS, CROP_MODE
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-from deepseek_ocr import DeepseekOCRForCausalLM
+# from deepseek_ocr import DeepseekOCRForCausalLM
 
-from vllm.model_executor.models.registry import ModelRegistry
+# from vllm.model_executor.models.registry import ModelRegistry
 from vllm import LLM, SamplingParams
-from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
+from vllm.model_executor.models.deepseek_ocr import NGramPerReqLogitsProcessor
+# from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
 from process.image_process import DeepseekOCRProcessor
 
-ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
+# ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
 
 
 class Colors:
@@ -104,23 +104,36 @@ class PDFBatchProcessor:
             tensor_parallel_size=self.tensor_parallel_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
             disable_mm_preprocessor_cache=True,
+            mm_processor_cache_gb=0,
+            logits_processors=[NGramPerReqLogitsProcessor]
         )
         
-        # Sampling parameters
-        logits_processors = [
-            NoRepeatNGramLogitsProcessor(
-                ngram_size=20,
-                window_size=50,
-                whitelist_token_ids={128821, 128822}
-            )
-        ]
+        # # Sampling parameters
+        # logits_processors = [
+        #     NoRepeatNGramLogitsProcessor(
+        #         ngram_size=20,
+        #         window_size=50,
+        #         whitelist_token_ids={128821, 128822}
+        #     )
+        # ]
         
+        # self.sampling_params = SamplingParams(
+        #     temperature=0.0,
+        #     max_tokens=8192,
+        #     logits_processors=logits_processors,
+        #     skip_special_tokens=False,
+        #     include_stop_str_in_output=True,
+        # )
         self.sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=8192,
-            logits_processors=logits_processors,
+            # ngram logit processor args
+            extra_args=dict(
+                ngram_size=30,
+                window_size=90,
+                whitelist_token_ids={128821, 128822},  # whitelist: <td>, </td>
+            ),
             skip_special_tokens=False,
-            include_stop_str_in_output=True,
         )
         
         # Progress tracking

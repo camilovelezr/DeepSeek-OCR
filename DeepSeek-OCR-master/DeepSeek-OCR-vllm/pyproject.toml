@@ -1,0 +1,17 @@
+[project]
+name = "deepseek-ocr-vllm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dagster>=1.11.16",
+    "dagster-webserver>=1.11.16",
+    "img2pdf>=0.6.1",
+    "pymupdf>=1.26.5",
+    "triton-kernels",
+    "vllm>=0.11.1rc4.dev63",
+]
+
+[tool.uv.sources]
+triton-kernels = { git = "https://github.com/triton-lang/triton.git", subdirectory = "python/triton_kernels", rev = "v3.5.0" }

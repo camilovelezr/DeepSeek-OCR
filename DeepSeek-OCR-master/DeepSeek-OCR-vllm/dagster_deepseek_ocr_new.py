@@ -21,7 +21,7 @@ from pathlib import Path
 # Add the current directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from run_dpsk_ocr_pdf_batch import PDFBatchProcessor
+from run_dpsk_ocr_pdf_batch_new import PDFBatchProcessor
 
 
 class DeepSeekOCRConfig(Config):
