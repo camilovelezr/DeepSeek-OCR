@@ -23,12 +23,14 @@ import numpy as np
 
 # from vllm.model_executor.models.registry import ModelRegistry
 from vllm import LLM, SamplingParams
-from vllm.model_executor.models.deepseek_ocr import NGramPerReqLogitsProcessor
+from vllm.model_executor.models.deepseek_ocr import NoRepeatNGramLogitsProcessor, DeepseekOCRProcessor
+from transformers import AutoTokenizer
 # from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
-from process.image_process import DeepseekOCRProcessor
+# from process.image_process import DeepseekOCRProcessor
 
 # ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
 
+TOKENIZER = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-OCR", trust_remote_code=True)
 
 class Colors:
     RED = '\033[31m'
@@ -105,36 +107,36 @@ class PDFBatchProcessor:
             gpu_memory_utilization=self.gpu_memory_utilization,
             disable_mm_preprocessor_cache=True,
             mm_processor_cache_gb=0,
-            logits_processors=[NGramPerReqLogitsProcessor]
+            # logits_processors=[NGramPerReqLogitsProcessor]
         )
         
-        # # Sampling parameters
-        # logits_processors = [
-        #     NoRepeatNGramLogitsProcessor(
-        #         ngram_size=20,
-        #         window_size=50,
-        #         whitelist_token_ids={128821, 128822}
-        #     )
-        # ]
+        # Sampling parameters
+        logits_processors = [
+            NoRepeatNGramLogitsProcessor(
+                ngram_size=20,
+                window_size=50,
+                whitelist_token_ids={128821, 128822}
+            )
+        ]
         
-        # self.sampling_params = SamplingParams(
-        #     temperature=0.0,
-        #     max_tokens=8192,
-        #     logits_processors=logits_processors,
-        #     skip_special_tokens=False,
-        #     include_stop_str_in_output=True,
-        # )
         self.sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=8192,
-            # ngram logit processor args
-            extra_args=dict(
-                ngram_size=30,
-                window_size=90,
-                whitelist_token_ids={128821, 128822},  # whitelist: <td>, </td>
-            ),
+            logits_processors=logits_processors,
             skip_special_tokens=False,
+            include_stop_str_in_output=True,
         )
+        # self.sampling_params = SamplingParams(
+        #     temperature=0.0,
+        #     max_tokens=8192,
+        #     # ngram logit processor args
+        #     extra_args=dict(
+        #         ngram_size=30,
+        #         window_size=90,
+        #         whitelist_token_ids={128821, 128822},  # whitelist: <td>, </td>
+        #     ),
+        #     skip_special_tokens=False,
+        # )
         
         # Progress tracking
         self.total_pdfs_processed = 0
@@ -213,7 +215,7 @@ class PDFBatchProcessor:
         cache_item = {
             "prompt": PROMPT,
             "multi_modal_data": {
-                "image": DeepseekOCRProcessor().tokenize_with_images(
+                "image": DeepseekOCRProcessor(tokenizer=TOKENIZER).tokenize_with_images(
                     images=[image],
                     bos=True,
                     eos=True,
