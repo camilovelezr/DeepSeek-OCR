@@ -81,6 +81,11 @@ class DeepSeekOCRConfig(Config):
         description="CUDA_VISIBLE_DEVICES setting (e.g., '0' for GPU 0, '0,1' for GPUs 0 and 1)",
         default="0"
     )
+    
+    use_w_pattern: bool = Field(
+        description="If True, use W* directory pattern (<input_dir>/<W*>/W*.pdf). If False, find all PDFs recursively.",
+        default=True
+    )
 
     # Performance Tuning
     quantization: Optional[str] = Field(
@@ -128,11 +133,13 @@ def batch_processed_pdfs(
     Process all PDFs from input_dir in batches with DeepSeek OCR.
     
     This asset:
-    1. Discovers all PDFs matching pattern <input_dir>/<W*>/W*.pdf
+    1. Discovers PDFs based on use_w_pattern setting:
+       - If True: Finds PDFs matching pattern <input_dir>/<W*>/W*.pdf
+       - If False: Finds all .pdf files recursively in input_dir
     2. Runs a warmup PDF (optional)
     3. Processes remaining PDFs in batches of size n
     4. Reports progress every m PDFs
-    5. Outputs to <output_dir>/<W*>/ with markdown, images, and annotated PDFs
+    5. Outputs to appropriate subdirectories with markdown, images, tables, and annotated PDFs
     
     Args:
         context: Dagster execution context
@@ -160,6 +167,7 @@ def batch_processed_pdfs(
         skip_repeat=config.skip_repeat,
         cuda_visible_devices=config.cuda_visible_devices,
         logger=context.log,  # Pass Dagster logger for real-time log streaming
+        use_w_pattern=config.use_w_pattern,
         
         # Pass performance tuning configs
         quantization=config.quantization,
@@ -191,6 +199,7 @@ def batch_processed_pdfs(
         "batch_size": MetadataValue.int(config.batch_size),
         "progress_interval": MetadataValue.int(config.progress_interval),
         "cuda_visible_devices": MetadataValue.text(config.cuda_visible_devices),
+        "use_w_pattern": MetadataValue.bool(config.use_w_pattern),
         "quantization": MetadataValue.text(str(config.quantization)),
         "tensor_parallel_size": MetadataValue.int(config.tensor_parallel_size),
         "gpu_memory_utilization": MetadataValue.float(config.gpu_memory_utilization),

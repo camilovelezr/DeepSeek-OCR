@@ -126,13 +126,16 @@ def re_match(text):
 
 
     mathes_image = []
+    mathes_table = []
     mathes_other = []
     for a_match in matches:
         if '<|ref|>image<|/ref|>' in a_match[0]:
             mathes_image.append(a_match[0])
+        elif '<|ref|>table<|/ref|>' in a_match[0]:
+            mathes_table.append(a_match[0])
         else:
             mathes_other.append(a_match[0])
-    return matches, mathes_image, mathes_other
+    return matches, mathes_image, mathes_table, mathes_other
 
 
 def extract_coordinates_and_label(ref_text, image_width, image_height):
@@ -164,6 +167,7 @@ def draw_bounding_boxes(image, refs, jdx):
         font = ImageFont.load_default()
 
     img_idx = 0
+    table_idx = 0
     
     for i, ref in enumerate(refs):
         try:
@@ -191,6 +195,14 @@ def draw_bounding_boxes(image, refs, jdx):
                             print(e)
                             pass
                         img_idx += 1
+                    elif label_type == 'table':
+                        try:
+                            cropped = image.crop((x1, y1, x2, y2))
+                            cropped.save(f"{OUTPUT_PATH}/tables/{jdx}_{table_idx}.jpg")
+                        except Exception as e:
+                            print(e)
+                            pass
+                        table_idx += 1
                         
                     try:
                         if label_type == 'title':
@@ -217,12 +229,12 @@ def draw_bounding_boxes(image, refs, jdx):
         except:
             continue
     img_draw.paste(overlay, (0, 0), overlay)
-    return img_draw
+    return img_draw, img_idx, table_idx
 
 
 def process_image_with_refs(image, ref_texts, jdx):
-    result_image = draw_bounding_boxes(image, ref_texts, jdx)
-    return result_image
+    result_image, img_count, table_count = draw_bounding_boxes(image, ref_texts, jdx)
+    return result_image, img_count, table_count
 
 
 def process_single_image(image):
@@ -239,6 +251,7 @@ if __name__ == "__main__":
 
     os.makedirs(OUTPUT_PATH, exist_ok=True)
     os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
+    os.makedirs(f'{OUTPUT_PATH}/tables', exist_ok=True)
     
     print(f'{Colors.RED}PDF loading .....{Colors.RESET}')
 
@@ -300,7 +313,7 @@ if __name__ == "__main__":
         
         page_num_text = f'\n<--- Page Split --->'
 
-        matches_ref, matches_images, mathes_other = re_match(content)
+        matches_ref, matches_images, matches_tables, mathes_other = re_match(content)
         
         modified_content = content
         for i, match in enumerate(matches_ref):
@@ -313,7 +326,7 @@ if __name__ == "__main__":
         image_draw = img.copy()
 
         # print(matches_ref)
-        result_image = process_image_with_refs(image_draw, matches_ref, jdx)
+        result_image, img_count, table_count = process_image_with_refs(image_draw, matches_ref, jdx)
 
 
         draw_images.append(result_image)
@@ -321,6 +334,9 @@ if __name__ == "__main__":
 
         for idx, a_match_image in enumerate(matches_images):
             content = content.replace(a_match_image, f'![](images/' + str(jdx) + '_' + str(idx) + '.jpg)\n')
+
+        for idx, a_match_table in enumerate(matches_tables):
+            content = content.replace(a_match_table, f'![](tables/' + str(jdx) + '_' + str(idx) + '.jpg)\n')
 
         for idx, a_match_other in enumerate(mathes_other):
             content = content.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n')

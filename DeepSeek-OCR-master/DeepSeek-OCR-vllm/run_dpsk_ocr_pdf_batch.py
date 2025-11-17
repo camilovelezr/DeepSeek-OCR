@@ -54,6 +54,7 @@ class PDFBatchProcessor:
         skip_repeat: bool = SKIP_REPEAT,
         cuda_visible_devices: str = "0",
         logger=None,
+        use_w_pattern: bool = True,
         # Performance Tuning
         quantization: str = None,
         tensor_parallel_size: int = 1,
@@ -72,6 +73,7 @@ class PDFBatchProcessor:
         self.skip_repeat = skip_repeat
         self.cuda_visible_devices = cuda_visible_devices
         self.logger = logger
+        self.use_w_pattern = use_w_pattern
         
         # Performance attributes
         self.quantization = quantization
@@ -104,6 +106,7 @@ class PDFBatchProcessor:
             tensor_parallel_size=self.tensor_parallel_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
             disable_mm_preprocessor_cache=True,
+            max_num_batched_tokens=8192,
         )
         
         # Sampling parameters
@@ -120,7 +123,6 @@ class PDFBatchProcessor:
             max_tokens=8192,
             logits_processors=logits_processors,
             skip_special_tokens=False,
-            include_stop_str_in_output=True,
         )
         
         # Progress tracking
@@ -149,23 +151,43 @@ class PDFBatchProcessor:
         
     def discover_pdfs(self) -> List[Tuple[str, str]]:
         """
-        Discover all PDFs matching pattern <input_dir>/<W*>/W*.pdf
-        Returns list of tuples: (pdf_path, w_dir_name)
-        Uses os.scandir() for maximum speed - no pathlib overhead.
+        Discover PDFs based on use_w_pattern setting.
+        
+        If use_w_pattern=True: Find PDFs matching pattern <input_dir>/<W*>/W*.pdf
+        If use_w_pattern=False: Find all .pdf files recursively in input_dir
+        
+        Returns list of tuples: (pdf_path, output_subdir_name)
+        Uses os.scandir() and os.walk() for maximum speed.
         """
         pdf_files = []
         input_dir_str = str(self.input_dir)
         
-        # Use os.scandir() for fastest directory iteration
-        with os.scandir(input_dir_str) as entries:
-            for entry in entries:
-                # Check if it's a directory starting with 'W'
-                if entry.is_dir() and entry.name.startswith('W'):
-                    w_name = entry.name
-                    # Check if W*.pdf exists in this directory
-                    pdf_path = os.path.join(entry.path, f"{w_name}.pdf")
-                    if os.path.isfile(pdf_path):
-                        pdf_files.append((pdf_path, w_name))
+        if self.use_w_pattern:
+            # Original W* pattern matching
+            with os.scandir(input_dir_str) as entries:
+                for entry in entries:
+                    # Check if it's a directory starting with 'W'
+                    if entry.is_dir() and entry.name.startswith('W'):
+                        w_name = entry.name
+                        # Check if W*.pdf exists in this directory
+                        pdf_path = os.path.join(entry.path, f"{w_name}.pdf")
+                        if os.path.isfile(pdf_path):
+                            pdf_files.append((pdf_path, w_name))
+        else:
+            # Find all PDFs recursively
+            for root, dirs, files in os.walk(input_dir_str):
+                for file in files:
+                    if file.lower().endswith('.pdf'):
+                        pdf_path = os.path.join(root, file)
+                        # Create output subdirectory name from relative path
+                        rel_path = os.path.relpath(pdf_path, input_dir_str)
+                        # Use the parent directory structure as the output subdir
+                        # e.g., "subdir1/subdir2/file.pdf" -> "subdir1/subdir2"
+                        output_subdir = os.path.dirname(rel_path)
+                        if not output_subdir:
+                            # If PDF is directly in input_dir, use filename without extension
+                            output_subdir = Path(file).stem
+                        pdf_files.append((pdf_path, output_subdir))
         
         self.log(f"Discovered {len(pdf_files)} PDFs")
         return pdf_files
@@ -239,13 +261,16 @@ class PDFBatchProcessor:
         matches = re.findall(pattern, text, re.DOTALL)
         
         mathes_image = []
+        mathes_table = []
         mathes_other = []
         for a_match in matches:
             if '<|ref|>image<|/ref|>' in a_match[0]:
                 mathes_image.append(a_match[0])
+            elif '<|ref|>table<|/ref|>' in a_match[0]:
+                mathes_table.append(a_match[0])
             else:
                 mathes_other.append(a_match[0])
-        return matches, mathes_image, mathes_other
+        return matches, mathes_image, mathes_table, mathes_other
     
     def extract_coordinates_and_label(self, ref_text, image_width: int, image_height: int):
         """Extract coordinates and labels from reference text."""
@@ -257,7 +282,7 @@ class PDFBatchProcessor:
             return None
         return (label_type, cor_list)
     
-    def draw_bounding_boxes(self, image: Image.Image, refs, jdx: int, images_dir: str):
+    def draw_bounding_boxes(self, image: Image.Image, refs, jdx: int, images_dir: str, tables_dir: str):
         """Draw bounding boxes on image."""
         image_width, image_height = image.size
         img_draw = image.copy()
@@ -272,6 +297,7 @@ class PDFBatchProcessor:
             font = ImageFont.load_default()
         
         img_idx = 0
+        table_idx = 0
         
         for i, ref in enumerate(refs):
             try:
@@ -298,6 +324,14 @@ class PDFBatchProcessor:
                                 print(e)
                                 pass
                             img_idx += 1
+                        elif label_type == 'table':
+                            try:
+                                cropped = image.crop((x1, y1, x2, y2))
+                                cropped.save(f"{tables_dir}/{jdx}_{table_idx}.jpg")
+                            except Exception as e:
+                                print(e)
+                                pass
+                            table_idx += 1
                         
                         try:
                             if label_type == 'title':
@@ -324,7 +358,7 @@ class PDFBatchProcessor:
                 continue
         
         img_draw.paste(overlay, (0, 0), overlay)
-        return img_draw
+        return img_draw, img_idx, table_idx
     
     def process_pdf_outputs(self, outputs_list, images_list, pdf_name: str, w_dir: str):
         """Process outputs for a single PDF and save results."""
@@ -333,6 +367,9 @@ class PDFBatchProcessor:
         
         images_dir = output_w_dir / "images"
         images_dir.mkdir(exist_ok=True)
+        
+        tables_dir = output_w_dir / "tables"
+        tables_dir.mkdir(exist_ok=True)
         
         mmd_det_path = output_w_dir / f"{pdf_name}_det.mmd"
         mmd_path = output_w_dir / f"{pdf_name}.mmd"
@@ -343,17 +380,34 @@ class PDFBatchProcessor:
         draw_images = []
         
         for jdx, (output, img) in enumerate(zip(outputs_list, images_list)):
-            content = output.outputs[0].text
+            # Extract text from vLLM output
+            try:
+                content = output.outputs[0].text
+            except (AttributeError, IndexError) as e:
+                self.log(f"Error extracting text from output {jdx}: {e}", level="error")
+                continue
             
-            if '<｜end▁of▁sentence｜>' in content:
-                content = content.replace('<｜end▁of▁sentence｜>', '')
-            else:
-                if self.skip_repeat:
-                    continue
+            # Handle end-of-sentence token - check for various possible formats
+            eos_variants = [
+                '<｜end▁of▁sentence｜>',  # Original format
+                '<|end_of_sentence|>',     # Alternative format
+                '<|endoftext|>',           # Common LLM EOS
+                '</s>',                     # Another common EOS
+            ]
+            
+            for eos_token in eos_variants:
+                if eos_token in content:
+                    content = content.replace(eos_token, '')
+                    break
+            
+            # Skip only if content is actually empty or very short (likely an error)
+            if self.skip_repeat and len(content.strip()) < 10:
+                self.log(f"Skipping page {jdx} - content too short", level="warning")
+                continue
             
             page_num_text = f'\n<--- Page Split --->'
             
-            matches_ref, matches_images, mathes_other = self.re_match(content)
+            matches_ref, matches_images, matches_tables, mathes_other = self.re_match(content)
             
             modified_content = content
             for i, match in enumerate(matches_ref):
@@ -364,11 +418,14 @@ class PDFBatchProcessor:
             contents_det += modified_content + f'\n{page_num_text}\n'
             
             image_draw = img.copy()
-            result_image = self.draw_bounding_boxes(image_draw, matches_ref, jdx, str(images_dir))
+            result_image, img_count, table_count = self.draw_bounding_boxes(image_draw, matches_ref, jdx, str(images_dir), str(tables_dir))
             draw_images.append(result_image)
             
             for idx, a_match_image in enumerate(matches_images):
                 content = content.replace(a_match_image, f'![](images/{jdx}_{idx}.jpg)\n')
+            
+            for idx, a_match_table in enumerate(matches_tables):
+                content = content.replace(a_match_table, f'![](tables/{jdx}_{idx}.jpg)\n')
             
             for idx, a_match_other in enumerate(mathes_other):
                 content = content.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n')
@@ -383,6 +440,16 @@ class PDFBatchProcessor:
             f.write(contents)
         
         self.pil_to_pdf_img2pdf(draw_images, str(pdf_out_path))
+        
+        # Validation: Only log warnings for empty outputs
+        if len(contents_det) == 0:
+            self.log(f"WARNING: {pdf_name}_det.mmd is EMPTY!", level="warning")
+        
+        if len(contents) == 0:
+            self.log(f"WARNING: {pdf_name}.mmd is EMPTY!", level="warning")
+        
+        if len(draw_images) == 0:
+            self.log(f"WARNING: No layout images generated for {pdf_name}_layouts.pdf!", level="warning")
     
     def process_single_pdf(self, pdf_path: str, w_dir: str) -> bool:
         """Process a single PDF and save outputs."""
@@ -409,16 +476,16 @@ class PDFBatchProcessor:
             return False
     
     def process_batch(self, pdf_batch: List[Tuple[str, str]]) -> int:
-        """Process a batch of PDFs CONCURRENTLY."""
+        """Process a batch of PDFs CONCURRENTLY with optimized batching."""
         batch_start = time.time()
         
-        # Convert ALL PDFs in batch to images concurrently
+        # Phase 1: Convert ALL PDFs in batch to images
+        phase1_start = time.time()
         all_images = []
         all_w_dirs = []
         all_pdf_names = []
         
-        self.log(f"Converting {len(pdf_batch)} PDFs to images...")
-        for pdf_path, w_dir in tqdm(pdf_batch, desc="Converting PDFs to images"):
+        for pdf_path, w_dir in tqdm(pdf_batch, desc="Phase 1: PDF → Images", leave=False):
             try:
                 images = self.pdf_to_images_high_quality(pdf_path, dpi=self.dpi)
                 all_images.append(images)
@@ -428,22 +495,34 @@ class PDFBatchProcessor:
                 self.log(f"Error loading {pdf_path}: {e}", level="error")
                 self.failed_pdfs.append(pdf_path)
         
-        # Preprocess ALL images from ALL PDFs in parallel
+        phase1_time = time.time() - phase1_start
+        num_pdfs = len(all_images)
+        
+        # Phase 2: Preprocess ALL images from ALL PDFs in parallel
+        phase2_start = time.time()
         all_batch_inputs = []
-        for images in tqdm(all_images, desc="Preprocessing images"):
+        total_pages = 0
+        for images in tqdm(all_images, desc="Phase 2: Preprocess Images", leave=False):
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                 batch_inputs = list(executor.map(self.process_single_image, images))
             all_batch_inputs.extend(batch_inputs)
+            total_pages += len(images)
         
-        # Run inference on ALL pages from ALL PDFs in the batch at once
-        self.log(f"Running inference on {len(all_batch_inputs)} pages...")
+        phase2_time = time.time() - phase2_start
+        
+        # Phase 3: Run inference on ALL pages from ALL PDFs in the batch at once
+        phase3_start = time.time()
         all_outputs = self.llm.generate(all_batch_inputs, sampling_params=self.sampling_params)
+        phase3_time = time.time() - phase3_start
         
-        # Split outputs back to individual PDFs and save
+        # Phase 4: Split outputs back to individual PDFs and save
+        phase4_start = time.time()
         output_idx = 0
         successful = 0
-        self.log(f"Saving outputs for {len(all_w_dirs)} PDFs...")
-        for images, w_dir, pdf_name in zip(all_images, all_w_dirs, all_pdf_names):
+        for images, w_dir, pdf_name in tqdm(zip(all_images, all_w_dirs, all_pdf_names), 
+                                            total=len(all_images), 
+                                            desc="Phase 4: Save Outputs", 
+                                            leave=False):
             num_pages = len(images)
             pdf_outputs = all_outputs[output_idx:output_idx + num_pages]
             output_idx += num_pages
@@ -452,22 +531,75 @@ class PDFBatchProcessor:
                 self.process_pdf_outputs(pdf_outputs, images, pdf_name, w_dir)
                 successful += 1
                 self.total_pdfs_processed += 1
-                
-                # Report progress at intervals
-                if self.total_pdfs_processed % self.progress_interval == 0:
-                    self.report_progress()
-                elif self.total_pdfs_processed % max(1, self.progress_interval // 10) == 0:
-                    elapsed = time.time() - self.start_time
-                    speed = self.total_pdfs_processed / elapsed if elapsed > 0 else 0
-                    self.log(f"{Colors.GREEN}✓ {self.total_pdfs_processed:,} PDFs | {speed:.2f} PDFs/sec{Colors.RESET}")
             except Exception as e:
                 self.log(f"Error saving outputs for {pdf_name}: {e}", level="error")
                 self.failed_pdfs.append(f"{w_dir}/{pdf_name}.pdf")
         
+        phase4_time = time.time() - phase4_start
         batch_time = time.time() - batch_start
         self.batch_times.append(batch_time)
         
+        # Report detailed phase metrics
+        self._report_batch_metrics(num_pdfs, total_pages, phase1_time, phase2_time, phase3_time, phase4_time, batch_time)
+        
+        # Report overall progress at intervals
+        if self.total_pdfs_processed % self.progress_interval == 0:
+            self.report_progress()
+        
         return successful
+    
+    def _report_batch_metrics(self, num_pdfs: int, total_pages: int, 
+                              phase1_time: float, phase2_time: float, 
+                              phase3_time: float, phase4_time: float, 
+                              batch_time: float):
+        """Report detailed metrics for each phase of batch processing."""
+        self.log(f"\n{Colors.BLUE}{'━' * 80}{Colors.RESET}")
+        
+        # Phase 1: PDF → Images
+        if num_pdfs > 0:
+            p1_per_pdf = phase1_time / num_pdfs
+            p1_per_min = (60 / p1_per_pdf) if p1_per_pdf > 0 else 0
+            p1_per_hour = p1_per_min * 60
+            p1_per_day = p1_per_hour * 24
+            self.log(f"{Colors.YELLOW}Phase 1: PDF → Images ({num_pdfs} PDFs){Colors.RESET}")
+            self.log(f"  Time: {phase1_time:.1f}s | {p1_per_pdf:.2f}s/PDF | {p1_per_min:.0f} PDFs/min | {p1_per_hour:.0f} PDFs/hour | {p1_per_day:,.0f} PDFs/day")
+        
+        # Phase 2: Preprocess Images
+        if num_pdfs > 0:
+            p2_per_pdf = phase2_time / num_pdfs
+            p2_per_min = (60 / p2_per_pdf) if p2_per_pdf > 0 else 0
+            p2_per_hour = p2_per_min * 60
+            p2_per_day = p2_per_hour * 24
+            self.log(f"{Colors.YELLOW}Phase 2: Preprocess Images ({total_pages} pages){Colors.RESET}")
+            self.log(f"  Time: {phase2_time:.1f}s | {p2_per_pdf:.2f}s/PDF | {p2_per_min:.0f} PDFs/min | {p2_per_hour:.0f} PDFs/hour | {p2_per_day:,.0f} PDFs/day")
+        
+        # Phase 3: Inference
+        if num_pdfs > 0:
+            p3_per_pdf = phase3_time / num_pdfs
+            p3_per_min = (60 / p3_per_pdf) if p3_per_pdf > 0 else 0
+            p3_per_hour = p3_per_min * 60
+            p3_per_day = p3_per_hour * 24
+            self.log(f"{Colors.YELLOW}Phase 3: Inference ({total_pages} pages){Colors.RESET}")
+            self.log(f"  Time: {phase3_time:.1f}s | {p3_per_pdf:.2f}s/PDF | {p3_per_min:.0f} PDFs/min | {p3_per_hour:.0f} PDFs/hour | {p3_per_day:,.0f} PDFs/day")
+        
+        # Phase 4: Save Outputs
+        if num_pdfs > 0:
+            p4_per_pdf = phase4_time / num_pdfs
+            p4_per_min = (60 / p4_per_pdf) if p4_per_pdf > 0 else 0
+            p4_per_hour = p4_per_min * 60
+            p4_per_day = p4_per_hour * 24
+            self.log(f"{Colors.YELLOW}Phase 4: Save Outputs ({num_pdfs} PDFs){Colors.RESET}")
+            self.log(f"  Time: {phase4_time:.1f}s | {p4_per_pdf:.2f}s/PDF | {p4_per_min:.0f} PDFs/min | {p4_per_hour:.0f} PDFs/hour | {p4_per_day:,.0f} PDFs/day")
+        
+        # Batch Total
+        if num_pdfs > 0:
+            batch_per_pdf = batch_time / num_pdfs
+            batch_per_min = (60 / batch_per_pdf) if batch_per_pdf > 0 else 0
+            batch_per_hour = batch_per_min * 60
+            batch_per_day = batch_per_hour * 24
+            self.log(f"\n{Colors.GREEN}Batch Total: {batch_time:.1f}s | {batch_per_pdf:.1f}s/PDF | {batch_per_min:.0f} PDFs/min | {batch_per_hour:.0f} PDFs/hour | {batch_per_day:,.0f} PDFs/day{Colors.RESET}")
+        
+        self.log(f"{Colors.BLUE}{'━' * 80}{Colors.RESET}\n")
     
     def report_progress(self, force=False):
         """Report processing progress and speed metrics."""
@@ -583,11 +715,15 @@ class PDFBatchProcessor:
 if __name__ == "__main__":
     # Example usage
     processor = PDFBatchProcessor(
-        input_dir="/path/to/input",
-        output_dir="/path/to/output",
-        batch_size=10,
-        progress_interval=10,
-        warmup=True,
+        input_dir="/polus2/velezramirezc2/pdf-extraction-code/data_deepseek_large",
+        output_dir="/polus2/velezramirezc2/pdf-extraction-code/data_deepseek_output",
+        batch_size=50, # best so far: 50
+        progress_interval=50,
+        warmup=False,
+        max_concurrency=1024,
+        use_w_pattern=False,
+        gpu_memory_utilization=0.9,
+        cuda_visible_devices="0",
     )
     
     metrics = processor.run()

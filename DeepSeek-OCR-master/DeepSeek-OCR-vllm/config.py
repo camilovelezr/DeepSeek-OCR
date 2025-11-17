@@ -9,8 +9,8 @@ BASE_SIZE = 1024
 IMAGE_SIZE = 640
 CROP_MODE = True
 MIN_CROPS= 2
-MAX_CROPS= 6 # max:9; If your GPU memory is small, it is recommended to set it to 6.
-MAX_CONCURRENCY = 100 # If you have limited GPU memory, lower the concurrency count.
+MAX_CROPS= 9 # max:9; If your GPU memory is small, it is recommended to set it to 6.
+MAX_CONCURRENCY = 256 # If you have limited GPU memory, lower the concurrency count.
 NUM_WORKERS = 64 # image pre-process (resize/padding) workers 
 PRINT_NUM_VIS_TOKENS = False
 SKIP_REPEAT = True
@@ -21,8 +21,8 @@ MODEL_PATH = 'deepseek-ai/DeepSeek-OCR' # change to your model path
 # .jpg, .png, .jpeg: run_dpsk_ocr_image.py; 
 # Omnidocbench images path: run_dpsk_ocr_eval_batch.py
 
-INPUT_PATH = '/polus2/velezramirezc2/pdf-extraction-code/aithena-pdf/data_deepseek/'
-OUTPUT_PATH = '/polus2/velezramirezc2/pdf-extraction-code/aithena-pdf/data_deepseek/pdf_4/out/molmed'
+INPUT_PATH = '/polus2/velezramirezc2/pdf-extraction-code/random_500_dirs/'
+OUTPUT_PATH = '/polus2/velezramirezc2/pdf-extraction-code/deepseek_ocr_output_v1'
 
 PROMPT = '<image>\n<|grounding|>Convert the document to markdown.'
 # PROMPT = '<image>\nFree OCR.'
